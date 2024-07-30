@@ -33,8 +33,10 @@ Note that you need to fill groq key
 
 * Usage
 
-1) Type ~M-ç~
-2) Write, edit beyin buffer
-3) Type ~M-ç~ again, wait AI response
+1) Select any text in any buffer -except the BEYIN buffer- using ~M-<SPC>~
+2) Type ~M-ç~
+3) Write, edit or do whatever you want with BEYIN buffer
+4) Type ~M-ç~ again
+5) Wait AI response
 
 Also you can save file with ~<file_name>.beyin~  and save the conversation.
