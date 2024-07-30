@@ -1,3 +1,40 @@
 *THIS PACKAGE IS UNDER DEVELOPMENT*
 
 * Installation
+
+#+begin_src emacs-lisp
+  (use-package gptel
+    :init
+    (setq gptel-model  "llama-3.1-70b-versatile"
+          gptel-backend (gptel-make-openai "Groq"
+                          :host "api.groq.com"
+                          :endpoint "/openai/v1/chat/completions"
+                          :stream t
+                          ;; TODO: get keys from
+                          ;; https://console.groq.com/keys
+                          :key "TODO"
+                          :models
+                          '("llama-3.1-70b-versatile"
+                            "llama-3.1-8b-instant"
+                            "llama3-70b-8192"
+                            "mixtral-8x7b-32768"
+                            "llama3-8b-8192"))))
+
+
+  (use-package beyin
+    :straight (beyin :type git :host github :repo "kadircancetin/beyin")
+    :init
+    (global-set-key (kbd "M-ç") 'beyin-chat))
+
+#+end_src
+
+
+Note that you need to fill groq key
+
+* Usage
+
+1) Type ~M-ç~
+2) Write, edit beyin buffer
+3) Type ~M-ç~ again, wait AI response
+
+Also you can save file with ~<file_name>.beyin~  and save the conversation.
