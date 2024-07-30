@@ -70,9 +70,10 @@
        "\n## CONTEXT"
        "\n<file> " (buffer-file-name) " </file>"
        "\n<context>"
-       "```"
+       "\n```"
        "\n" (buffer-substring-no-properties (region-beginning) (region-end))
-       "\n```</context>"
+       "\n```"
+       "\n</context>"
        "\n## INPUT"
        "\n")
     ""))
