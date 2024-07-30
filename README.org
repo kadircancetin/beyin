@@ -33,7 +33,7 @@ Note that you need to fill groq key
 
 * Usage
 
-1) Select any text in any buffer -except the BEYIN buffer- using ~M-<SPC>~
+1) Select any text in any buffer -except the BEYIN buffer- using ~M-<SPC>~. You don't have to select BTW.
 2) Type ~M-ç~
 3) Write, edit or do whatever you want with BEYIN buffer
 4) Type ~M-ç~ again
