@@ -40,4 +40,4 @@ Note that you need to fill groq key
 5) Wait AI response
 6) Write your response or edit AI response, type ~M-ç~ again.
 
-Also you can save file with ~<file_name>.beyin~  and save the conversation.
+Also you can save file like ~<name>.beyin~  so you will save the conversation for future.
