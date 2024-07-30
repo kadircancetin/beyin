@@ -116,9 +116,9 @@
 
 ;; TODO them make buffer local
 (add-hook
-'gptel-post-response-functions
-(lambda (&rest _)
-  (with-current-buffer beyin--last-buffer (beyin--end-of-response-hook))))
+ 'gptel-post-response-functions
+ (lambda (&rest _)
+   (with-current-buffer beyin--last-buffer (beyin--end-of-response-hook))))
 
 (add-hook
  'gptel-pre-response-hook
@@ -162,19 +162,21 @@
   (let ((buffer (current-buffer)))
     (setq beyin--last-buffer buffer)
     (gptel-request
-        (beyin--parse-chat-content (buffer-substring-no-properties (point-min) (point-max)))
-      :buffer buffer
-      :stream t
-      :callback
-      (lambda (response info)
-        (delete-overlay beyin--waiting-response-overlay)
-        (if (not response) (message "gptel-quick failed with message: %s" (plist-get info :status))
-          (with-current-buffer buffer
-            (let ((inhibit-read-only t))
-              (goto-char (point-max))
-              (insert response))
-            (font-lock-ensure)))))))
+     (beyin--parse-chat-content (buffer-substring-no-properties (point-min) (point-max)))
+     :buffer buffer
+     :stream t
+     :callback
+     (lambda (response info)
+       (delete-overlay beyin--waiting-response-overlay)
+       (if (not response) (message "gptel-quick failed with message: %s" (plist-get info :status))
+         (with-current-buffer buffer
+           (let ((inhibit-read-only t))
+             (goto-char (point-max))
+             (insert response))
+           (font-lock-ensure)))))))
 
+
+;;;###autoload
 (defun beyin-chat ()
   (interactive)
   (if (not (eq major-mode 'beyin-mode))
