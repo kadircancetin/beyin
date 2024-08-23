@@ -52,8 +52,7 @@
 
 
 (defcustom beyin--system-prompt
-  "- You are an LLM integrated within a text editor, designed to be a concise and helpful assistant.
-- Users may or may not select text in the editor. If selected, it will be enclosed in <context> tags."
+  "You are an LLM integrated within a text editor, designed to assist with concise and helpful responses. Users may select text, which will be enclosed in <context> tags."
   "HERE")
 
 
