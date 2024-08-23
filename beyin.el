@@ -52,7 +52,7 @@
 
 
 (defcustom beyin--system-prompt
-  "You are an LLM integrated within a text editor, designed to assist with concise and helpful responses. Users may select text, which will be enclosed in <context> tags."
+  "You are an LLM integrated within a text editor, designed to assist with brief, concise and helpful responses. Users may select text, which will be enclosed in <context> tags."
   "HERE")
 
 
@@ -196,9 +196,21 @@
 (define-key beyin-mode-map (kbd "C-g")
             (lambda ()
               (interactive)
-              (beyin--end-of-response-hook)
-              (gptel-abort (current-buffer))
+              (when (gptel-active-process-on-current-buffer-p)
+                (beyin--end-of-response-hook)
+                (gptel-abort (current-buffer)))
               (keyboard-quit)))
+
+(defun gptel-active-process-on-current-buffer-p ()
+  "Check if there is an ongoing gptel process associated with the current buffer."
+  (interactive)
+  (if-let ((proc-attrs
+            (cl-find-if
+             (lambda (proc-list)
+               (eq (plist-get (cdr proc-list) :buffer) (current-buffer)))
+             gptel-curl--process-alist)))
+      t
+    nil))
 
 
 
