@@ -84,6 +84,7 @@
     (dolist (line lines)
 
       (if (string-prefix-p role-start line)
+          ;; tokenize role
           (let* (;; remove role start
                  (role-name (substring line (length role-start)))
                  ;; remove `:` end of role
@@ -91,7 +92,12 @@
                                 (substring role-name 0 -1)
                               role-name)))
             (push (cons 'role role-name) tokens))
-        (push (cons 'text line) tokens)))
+
+        ;; tokenize text
+        ;; combine lines
+        (if (eq (car (first tokens)) 'text)
+            (push (cons 'text (concat (cdr (pop tokens)) "\n" line)) tokens)
+          (push (cons 'text line) tokens))))
 
     (reverse tokens)))
 
@@ -106,8 +112,7 @@
          (setq last-role (downcase (cdr token))))
         ('text
          (when last-role
-           (push `(:role ,last-role :content ,(cdr token)) result)
-           (setq last-role nil)))))
+           (push `(:role ,last-role :content ,(string-trim (cdr token))) result)))))
 
     (nreverse result)))
 
