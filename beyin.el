@@ -77,27 +77,45 @@
        "\n")
     ""))
 
-(defun beyin--parse-chat-content (content)
-  "Parse chat content into a list of alists."
+(defun beyin--tokenize-buffer (content)
   (let ((lines (split-string content "\n"))
-        (current-role nil)
-        (current-content "")
-        (result '()))
+        (tokens '())
+        (role-start "# --"))
     (dolist (line lines)
-      (cond
-       ;; New role
-       ((string-match "^# --\\(.*\\):$" line)
-        (when (and current-role (not (string= current-content "")))
-          (push `(:role ,current-role :content ,(string-trim current-content)) result)
-          (setq current-content ""))
-        (setq current-role (downcase (match-string 1 line))))
-       ;; Content
-       ((not (string= line ""))
-        (setq current-content (concat current-content line "\n")))))
-    ;; Add the last item
-    (when (and current-role (not (string= current-content "")))
-      (push `(:role ,current-role :content ,(string-trim current-content)) result))
+
+      (if (string-prefix-p role-start line)
+          (let* (;; remove role start
+                 (role-name (substring line (length role-start)))
+                 ;; remove `:` end of role
+                 (role-name (if (string-suffix-p ":" role-name)
+                                (substring role-name 0 -1)
+                              role-name)))
+            (push (cons 'role role-name) tokens))
+        (push (cons 'text line) tokens)))
+
+    (reverse tokens)))
+
+
+(defun beyin--parse-for-gptel (tokens)
+  (let ((result '())
+        (last-role nil))
+
+    (dolist (token tokens)
+      (pcase (car token)
+        ('role
+         (setq last-role (downcase (cdr token))))
+        ('text
+         (when last-role
+           (push `(:role ,last-role :content ,(cdr token)) result)
+           (setq last-role nil)))))
+
     (nreverse result)))
+
+
+(defun beyin--parse-buffer--for-gptel ()
+  "Parse chat content into a list of alists."
+  (interactive)
+  (beyin--parse-for-gptel (beyin--tokenize-buffer (buffer-substring-no-properties (point-min) (point-max)))))
 
 
 
@@ -149,7 +167,7 @@
       (display-buffer (get-buffer-create beyin--default-buffer-name)
                       `((display-buffer-in-side-window)
                         (side . right)
-                        (window-width . 99))))
+                        (window-width . 80))))
     (select-window (get-buffer-window beyin--default-buffer-name 0))
     (goto-char (point-max))
     (god-local-mode 0)
@@ -157,23 +175,22 @@
 
 (defun beyin--handle-send-chat-msg ()
   (setq beyin--waiting-response-overlay (make-overlay (point-max) (point-max)))
-  (overlay-put beyin--waiting-response-overlay 'after-string "\n\n--> LLM THINKING...")
+  (overlay-put beyin--waiting-response-overlay 'after-string (concat "\n\n--> " gptel-model " THINKING..."))
 
   (let ((buffer (current-buffer)))
     (setq beyin--last-buffer buffer)
-    (gptel-request
-     (beyin--parse-chat-content (buffer-substring-no-properties (point-min) (point-max)))
-     :buffer buffer
-     :stream t
-     :callback
-     (lambda (response info)
-       (delete-overlay beyin--waiting-response-overlay)
-       (if (not response) (message "gptel-quick failed with message: %s" (plist-get info :status))
-         (with-current-buffer buffer
-           (let ((inhibit-read-only t))
-             (goto-char (point-max))
-             (insert response))
-           (font-lock-ensure)))))))
+    (gptel-request (beyin--parse-buffer--for-gptel)
+      :buffer buffer
+      :stream t
+      :callback
+      (lambda (response info)
+        (delete-overlay beyin--waiting-response-overlay)
+        (if (not response) (message "gptel-quick failed with message: %s" (plist-get info :status))
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert response))
+            (font-lock-ensure)))))))
 
 
 ;;;###autoload
@@ -181,7 +198,14 @@
   (interactive)
   (if (not (eq major-mode 'beyin-mode))
       (beyin--handle-new-session)
-    (beyin--handle-send-chat-msg)))
+
+    (let* ((last-msg (last (beyin--parse-buffer--for-gptel)))
+           (last-msg (car last-msg)))
+      (if (and (string-equal (plist-get last-msg :role) "user")
+               (string-equal (plist-get last-msg :content) ""))
+          (kadir/delete-window)
+
+        (beyin--handle-send-chat-msg)))))
 
 
 
