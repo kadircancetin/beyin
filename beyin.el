@@ -180,7 +180,12 @@
 
 (defun beyin--handle-send-chat-msg ()
   (setq beyin--waiting-response-overlay (make-overlay (point-max) (point-max)))
-  (overlay-put beyin--waiting-response-overlay 'after-string (concat "\n\n--> " gptel-model " THINKING..."))
+  (overlay-put beyin--waiting-response-overlay 'after-string
+               (concat "\n\n--> "
+                       (if (eq (type-of gptel-model) 'string)
+                           gptel-model
+                         (symbol-name gptel-model))
+                       " THINKING..."))
 
   (let ((buffer (current-buffer)))
     (setq beyin--last-buffer buffer)
