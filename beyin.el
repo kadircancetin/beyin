@@ -52,15 +52,16 @@
 
 
 (defcustom beyin--system-prompt
-  "<llm_info>
+  "
+<llm_info>
 You are an LLM integrated within a text editor, designed to assist with brief, concise and helpful responses.
 
-Users may select text. It there is selected text, it will be enclosed in <file> and <context> tags.
+Users may select text. It there is selected text, it will be enclosed in <context> tag. This will help you to understand the what is question about.
 </llm_info>
 
-<review>
+<review_task>
 If user ask you to review a code, try to find bugs, not talk much about what is code for.
-</review>"
+</review_task>"
   "HERE")
 
 
@@ -70,27 +71,11 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
 
 
 
-(defun beyin--build-context()
-  (interactive)
-  (if (use-region-p)
-      (concat
-       "\n## CONTEXT"
-       "\n<file> " (buffer-file-name) " </file>"
-       "\n<context>"
-       "\n```"
-       "\n" (buffer-substring-no-properties (region-beginning) (region-end))
-       "\n```"
-       "\n</context>"
-       "\n## INPUT"
-       "\n")
-    ""))
-
 (defun beyin--tokenize-buffer (content)
   (let ((lines (split-string content "\n"))
         (tokens '())
         (role-start "# --"))
     (dolist (line lines)
-
       (if (string-prefix-p role-start line)
           ;; tokenize role
           (let* (;; remove role start
@@ -100,20 +85,17 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
                                 (substring role-name 0 -1)
                               role-name)))
             (push (cons 'role role-name) tokens))
-
         ;; tokenize text
         ;; combine lines
         (if (eq (car (first tokens)) 'text)
             (push (cons 'text (concat (cdr (pop tokens)) "\n" line)) tokens)
           (push (cons 'text line) tokens))))
-
     (reverse tokens)))
 
 
 (defun beyin--parse-for-gptel (tokens)
   (let ((result '())
         (last-role nil))
-
     (dolist (token tokens)
       (pcase (car token)
         ('role
@@ -121,7 +103,6 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
         ('text
          (when last-role
            (push `(:role ,last-role :content ,(string-trim (cdr token))) result)))))
-
     (nreverse result)))
 
 
@@ -136,7 +117,6 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
 (setq beyin--last-buffer nil)
 
 
-
 
 (defun beyin--end-of-response-hook ()
   (delete-overlay beyin--waiting-response-overlay)
@@ -160,47 +140,22 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
      (font-lock-ensure)
      (read-only-mode 1))))
 
+
 
-
-(defun beyin--handle-new-session ()
+(defun beyin-chat--build-region-context()
   (interactive)
-  (let ((has-old-session (get-buffer beyin--default-buffer-name))
-        (context-msg (beyin--build-context)))
+  (concat
+   "\n#### CONTEXT:"
+   (if (buffer-file-name)
+       (concat "\n<file> " (buffer-file-name) " </file>"))
+   "\n<context>"
+   "\n```"
+   "\n" (buffer-substring-no-properties (region-beginning) (region-end))
+   "\n```"
+   "\n</context>"
+   "\n#### INPUT:"
+   "\n"))
 
-    (with-current-buffer (get-buffer-create beyin--default-buffer-name)
-      (let ((inhibit-read-only t))
-        (goto-char (point-max))
-
-        (if (not has-old-session)
-            (progn
-              (beyin-mode)
-              (insert (concat "# --SYSTEM:\n" beyin--system-prompt "\n\n# --USER:\n" context-msg))
-              (re-search-backward "# --SYSTEM" nil t)
-              (markdown-back-to-heading)
-              (outline-hide-subtree)
-              (setq markdown-cycle-subtree-status 'folded)
-              (goto-char (point-max)))
-          (insert context-msg))
-
-        (unless (s-equals? context-msg "")
-          (re-search-backward "## CONTEXT" nil t)
-          (markdown-back-to-heading)
-          (outline-hide-subtree)
-          (setq markdown-cycle-subtree-status 'folded)
-          (goto-char (point-max)))
-
-        (beyin-mode)
-        (visual-line-mode 1)))
-
-    (unless (get-buffer-window beyin--default-buffer-name 0)
-      (display-buffer (get-buffer-create beyin--default-buffer-name)
-                      `((display-buffer-in-side-window)
-                        (side . right)
-                        (window-width . 80))))
-    (select-window (get-buffer-window beyin--default-buffer-name 0))
-    (goto-char (point-max))
-    (god-local-mode 0)
-    (beacon-blink)))
 
 (defun beyin--handle-send-chat-msg ()
   (setq beyin--waiting-response-overlay (make-overlay (point-max) (point-max)))
@@ -233,22 +188,59 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
            (font-lock-ensure)))))))
 
 
-;;;###autoload
-(defun beyin-chat ()
+(defun beyin-chat--open-and-jump-buffer()
   (interactive)
-  (if (not (eq major-mode 'beyin-mode))
-      (beyin--handle-new-session)
+  (let ((has-old-session (get-buffer beyin--default-buffer-name)))
+    (with-current-buffer (get-buffer-create beyin--default-buffer-name)
+      (let ((inhibit-read-only t))
+        (beyin-mode)
+        (gptel-mode)
+        (visual-line-mode 1)
+        (goto-char (point-max))
 
-    (let* ((last-msg (last (beyin--parse-buffer--for-gptel)))
-           (last-msg (car last-msg)))
-      (if (and (string-equal (plist-get last-msg :role) "user")
-               (string-equal (plist-get last-msg :content) ""))
-          (kadir/delete-window)
+        ;; initialize system message
+        (unless has-old-session
+          (insert (concat "# --SYSTEM:\n" beyin--system-prompt "\n\n# --USER:\n"))
+          (re-search-backward "# --SYSTEM" nil t)
+          (markdown-back-to-heading)
+          (outline-hide-subtree)
+          (goto-char (point-max)))))
 
-        (beyin--handle-send-chat-msg)))))
+    (unless (get-buffer-window beyin--default-buffer-name 0)
+      (display-buffer (get-buffer-create beyin--default-buffer-name)
+                      `((display-buffer-in-side-window)
+                        (side . right)
+                        (window-width . 80))))
+
+    (select-window (get-buffer-window beyin--default-buffer-name 0))
+    (goto-char (point-max))
+    (god-local-mode 0)
+    (beacon-blink)))
+
+(defun beyin-chat--handle-region()
+  (interactive)
+  (let ((context-msg (beyin-chat--build-region-context)))
+    (beyin-chat--open-and-jump-buffer)
+    (with-current-buffer (get-buffer-create beyin--default-buffer-name)
+      (goto-char (point-max))
+      (insert context-msg)
+      (re-search-backward "#### CONTEXT" nil t)
+      (markdown-back-to-heading)
+      (outline-hide-subtree)
+      (setq markdown-cycle-subtree-status 'folded)
+      (goto-char (point-max)))))
 
 
 
+;;;###autoload
+(defun beyin-chat ()
+  (interactive)
+  (cond
+   ((region-active-p) (beyin-chat--handle-region))
+   ((eq major-mode 'beyin-mode) (beyin--handle-send-chat-msg))
+   (t (beyin-chat--open-and-jump-buffer))))
+
+
 (define-derived-mode beyin-mode markdown-mode "Beyin Mode")
 
 (font-lock-add-keywords 'beyin-mode `(("^# --\\(USER\\):$" 1 'beyin-user-title-font prepend)) 'append)
@@ -261,7 +253,6 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
             (lambda ()
               (when (eq major-mode 'beyin-mode)
                 (gptel-abort (current-buffer)))))
-
 
 
 
