@@ -52,7 +52,15 @@
 
 
 (defcustom beyin--system-prompt
-  "You are an LLM integrated within a text editor, designed to assist with brief, concise and helpful responses. Users may select text, which will be enclosed in <context> tags."
+  "<llm_info>
+You are an LLM integrated within a text editor, designed to assist with brief, concise and helpful responses.
+
+Users may select text. It there is selected text, it will be enclosed in <file> and <context> tags.
+</llm_info>
+
+<review>
+If user ask you to review a code, try to find bugs, not talk much about what is code for.
+</review>"
   "HERE")
 
 
@@ -162,9 +170,25 @@
     (with-current-buffer (get-buffer-create beyin--default-buffer-name)
       (let ((inhibit-read-only t))
         (goto-char (point-max))
+
         (if (not has-old-session)
-            (insert (concat "# --SYSTEM:\n" beyin--system-prompt "\n\n# --USER:\n" context-msg))
+            (progn
+              (beyin-mode)
+              (insert (concat "# --SYSTEM:\n" beyin--system-prompt "\n\n# --USER:\n" context-msg))
+              (re-search-backward "# --SYSTEM" nil t)
+              (markdown-back-to-heading)
+              (outline-hide-subtree)
+              (setq markdown-cycle-subtree-status 'folded)
+              (goto-char (point-max)))
           (insert context-msg))
+
+        (unless (s-equals? context-msg "")
+          (re-search-backward "## CONTEXT" nil t)
+          (markdown-back-to-heading)
+          (outline-hide-subtree)
+          (setq markdown-cycle-subtree-status 'folded)
+          (goto-char (point-max)))
+
         (beyin-mode)
         (visual-line-mode 1)))
 
@@ -189,18 +213,24 @@
 
   (let ((buffer (current-buffer)))
     (setq beyin--last-buffer buffer)
-    (gptel-request (beyin--parse-buffer--for-gptel)
-      :buffer buffer
-      :stream t
-      :callback
-      (lambda (response info)
-        (delete-overlay beyin--waiting-response-overlay)
-        (if (not response) (message "gptel-quick failed with message: %s" (plist-get info :status))
-          (with-current-buffer buffer
-            (let ((inhibit-read-only t))
-              (goto-char (point-max))
-              (insert response))
-            (font-lock-ensure)))))))
+
+    (gptel-curl-get-response
+     (list :data (list
+                  :model (gptel--model-name gptel-model)
+                  :messages (apply 'vector  (beyin--parse-buffer--for-gptel))
+                  :stream t
+                  :temperature 0)
+           :buffer buffer
+           :position (point-marker))
+
+     (lambda (response info)
+       (delete-overlay beyin--waiting-response-overlay)
+       (if (not response) (message "gptel-quick failed with message: %s" (plist-get info :status))
+         (with-current-buffer buffer
+           (let ((inhibit-read-only t))
+             (goto-char (point-max))
+             (insert response))
+           (font-lock-ensure)))))))
 
 
 ;;;###autoload
@@ -227,24 +257,11 @@
 
 (add-to-list 'auto-mode-alist (cons "\\.beyin\\'" 'beyin-mode))
 
-(define-key beyin-mode-map (kbd "C-g")
+(advice-add 'keyboard-quit :before
             (lambda ()
-              (interactive)
-              (when (gptel-active-process-on-current-buffer-p)
-                (beyin--end-of-response-hook)
-                (gptel-abort (current-buffer)))
-              (keyboard-quit)))
+              (when (eq major-mode 'beyin-mode)
+                (gptel-abort (current-buffer)))))
 
-(defun gptel-active-process-on-current-buffer-p ()
-  "Check if there is an ongoing gptel process associated with the current buffer."
-  (interactive)
-  (if-let ((proc-attrs
-            (cl-find-if
-             (lambda (proc-list)
-               (eq (plist-get (cdr proc-list) :buffer) (current-buffer)))
-             gptel-curl--process-alist)))
-      t
-    nil))
 
 
 
