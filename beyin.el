@@ -27,7 +27,8 @@
 ;;; Code:
 
 (require 'gptel)
-
+(require 'cl)
+(require 's)
 
 (defgroup beyin nil "HERE")
 
@@ -72,6 +73,7 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
 
 
 (defun beyin--tokenize-buffer (content)
+  "returns '((role . \"SYSTEM\") (text . \"test 000\") (role . \"ASSISTANT\") (text . \"test  \") "
   (let ((lines (split-string content "\n"))
         (tokens '())
         (role-start "# --"))
@@ -93,23 +95,52 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
     (reverse tokens)))
 
 
-(defun beyin--parse-for-gptel (tokens)
+(defun beyin--parse-conversation-as-list-of-string (tokens)
+  "Only calculate USER and ASSISTANT messages. Returns list of string of the conversation. Starting
+from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\")"
   (let ((result '())
-        (last-role nil))
+        (current-role nil)
+        (expected-role "user"))
+
     (dolist (token tokens)
-      (pcase (car token)
-        ('role
-         (setq last-role (downcase (cdr token))))
-        ('text
-         (when last-role
-           (push `(:role ,last-role :content ,(string-trim (cdr token))) result)))))
+      (let ((key (car token))
+            (value (downcase (cdr token))))
+        (pcase key
+          ('role
+           (setq current-role value)
+           (unless (member value '("user" "assistant"))
+             (setq current-role nil)))
+          ('text
+           (when current-role
+             (if (s-equals? current-role expected-role)
+                 (progn
+                   (push value result)
+                   (if (s-equals? expected-role "user")
+                       (setq expected-role "assistant")
+                     (setq expected-role "user")))
+               (progn
+                 (push nil result)
+                 (push value result))))))))
     (nreverse result)))
 
 
-(defun beyin--parse-buffer--for-gptel ()
-  "Parse chat content into a list of alists."
-  (interactive)
-  (beyin--parse-for-gptel (beyin--tokenize-buffer (buffer-substring-no-properties (point-min) (point-max)))))
+(defun beyin--get-last-system-message (tokens)
+  "returns string"
+  (let ((found nil)
+        (result nil))
+    (dolist (token tokens)
+      (let ((key (car token))
+            (value (downcase (cdr token))))
+        (pcase key
+          ('role
+           (when (s-equals? value "system")
+             (setq found t)))
+          ('text
+           (when found
+             (setq found nil)
+             (setq result value))))))
+    result))
+
 
 
 
@@ -142,6 +173,7 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
 
 
 
+
 (defun beyin-chat--build-region-context()
   (interactive)
   (concat
@@ -169,23 +201,20 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
   (let ((buffer (current-buffer)))
     (setq beyin--last-buffer buffer)
 
-    (gptel-curl-get-response
-     (list :data (list
-                  :model (gptel--model-name gptel-model)
-                  :messages (apply 'vector  (beyin--parse-buffer--for-gptel))
-                  :stream t
-                  :temperature 0)
-           :buffer buffer
-           :position (point-marker))
-
-     (lambda (response info)
-       (delete-overlay beyin--waiting-response-overlay)
-       (if (not response) (message "gptel-quick failed with message: %s" (plist-get info :status))
-         (with-current-buffer buffer
-           (let ((inhibit-read-only t))
-             (goto-char (point-max))
-             (insert response))
-           (font-lock-ensure)))))))
+    (let ((tokens (beyin--tokenize-buffer (buffer-substring-no-properties (point-min) (point-max)))))
+      (gptel-request (beyin--parse-conversation-as-list-of-string tokens)
+        :buffer buffer
+        :stream t
+        :system (beyin--get-last-system-message tokens)
+        :callback
+        (lambda (response info)
+          (delete-overlay beyin--waiting-response-overlay)
+          (if (not response) (message "gptel-quick failed with message: %s" (plist-get info :status))
+            (with-current-buffer buffer
+              (let ((inhibit-read-only t))
+                (goto-char (point-max))
+                (insert response))
+              (font-lock-ensure))))))))
 
 
 (defun beyin-chat--open-and-jump-buffer()
@@ -252,7 +281,9 @@ If user ask you to review a code, try to find bugs, not talk much about what is 
 (advice-add 'keyboard-quit :before
             (lambda ()
               (when (eq major-mode 'beyin-mode)
-                (gptel-abort (current-buffer)))))
+                (gptel-abort (current-buffer))
+                (beyin--end-of-response-hook)
+                )))
 
 
 
