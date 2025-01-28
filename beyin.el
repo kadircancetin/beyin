@@ -83,30 +83,35 @@ If user say grammar, fix user grammar
 
 
 
-(defun beyin--tokenize-buffer (content)
-  "returns '((role . \"SYSTEM\") (text . \"test 000\") (role . \"ASSISTANT\") (text . \"test  \") "
+(defun beyin--tokenize-role-line (line)
+  "Helper function to tokenize a role line."
+  (let* ((role-name (substring line (length "# --")))
+         (role-name (if (string-suffix-p ":" role-name)
+                        (substring role-name 0 -1)
+                      role-name)))
+    (unless role-name
+      (error "Invalid role line: Missing role name after '# --'"))
+    (cons 'role role-name)))
+
+(defun beyin--tokenize-text-line (line tokens)
+  "Helper function to tokenize a text line."
+  (if (eq (car (first tokens)) 'text)
+      (cons (cons 'text (concat (cdr (pop tokens)) "\n" line)) tokens)
+    (cons (cons 'text line) tokens)))
+
+(defun beyin--tokenize-buffer-content (content)
+  "Returns '((role . \"SYSTEM\") (text . \"test 000\") (role . \"ASSISTANT\") (text . \"test  \"))"
   (let ((lines (split-string content "\n"))
         (tokens '())
         (role-start "# --"))
     (dolist (line lines)
       (if (string-prefix-p role-start line)
-          ;; tokenize role
-          (let* (;; remove role start
-                 (role-name (substring line (length role-start)))
-                 ;; remove `:` end of role
-                 (role-name (if (string-suffix-p ":" role-name)
-                                (substring role-name 0 -1)
-                              role-name)))
-            (push (cons 'role role-name) tokens))
-        ;; tokenize text
-        ;; combine lines
-        (if (eq (car (first tokens)) 'text)
-            (push (cons 'text (concat (cdr (pop tokens)) "\n" line)) tokens)
-          (push (cons 'text line) tokens))))
+          (push (beyin--tokenize-role-line line) tokens)
+        (setq tokens (beyin--tokenize-text-line line tokens))))
     (reverse tokens)))
 
 
-(defun beyin--parse-conversation-as-list-of-string (tokens)
+(defun beyin--extract-conversation-turns (tokens)
   "Only calculate USER and ASSISTANT messages. Returns list of string of the conversation. Starting
 from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\")"
   (let ((result '())
@@ -118,21 +123,27 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
             (value (cdr token)))
         (pcase key
           ('role
+           ;; If the token is a role, update the current role.
+           ;; Only consider 'user' and 'assistant' roles.
            (setq value (downcase value))
-           (setq current-role value)
-           (unless (member value '("user" "assistant"))
-             (setq current-role nil)))
+           (setq current-role (if (member value '("user" "assistant"))
+                                  value
+                                nil)))
           ('text
+           ;; If the token is text and we have a current role:
            (when current-role
-             (if (s-equals? current-role expected-role)
-                 (progn
-                   (push value result)
-                   (if (s-equals? expected-role "user")
-                       (setq expected-role "assistant")
-                     (setq expected-role "user")))
-               (progn
-                 (push nil result)
-                 (push value result))))))))
+             (cond
+              ((string= current-role expected-role)
+               ;; If the current role matches the expected role, add the text to the result.
+               (push value result)
+               ;; Switch the expected role.
+               (setq expected-role (if (string= expected-role "user")
+                                       "assistant"
+                                     "user")))
+              (t
+               ;; Otherwise, add nil (to indicate a skipped turn) and then the text.
+               (push nil result)
+               (push value result))))))))
     (nreverse result)))
 
 
@@ -153,7 +164,7 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
              (setq result value))))))
     result))
 
-(defun beyin--if-last-message-empty-user-message (tokens)
+(defun beyin--last-user-message-empty-p (tokens)
   "returns nil or t"
   (let ((found nil)
         (last-user-message nil))
@@ -176,14 +187,14 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
 
 
 
-(setq beyin--last-buffer nil)
+(setq beyin--last-used-buffer nil)
 
 
 
-(defun beyin--end-of-response-hook ()
+(defun beyin--handle-end-of-response ()
   (end-of-buffer)
-  (unless (beyin--if-last-message-empty-user-message (beyin--tokenize-buffer (buffer-substring-no-properties (point-min) (point-max))))
-    (insert "\n\n# --USER:\n"))
+  (unless (beyin--last-user-message-empty-p (beyin--tokenize-buffer-content (buffer-substring-no-properties (point-min) (point-max))))
+    (beyin--insert-role-marker "USER"))
 
   (gptel--update-status " READY" 'success))
 
@@ -191,20 +202,26 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
 (add-hook
  'gptel-post-response-functions
  (lambda (&rest _)
-   (with-current-buffer beyin--last-buffer (beyin--end-of-response-hook))))
+   (with-current-buffer beyin--last-used-buffer (beyin--handle-end-of-response))))
 
 (add-hook
  'gptel-pre-response-hook
  (lambda()
-   (with-current-buffer beyin--last-buffer
+   (with-current-buffer beyin--last-used-buffer
      (gptel--update-status " Waiting LLM..." 'warning)
-     (end-of-buffer)
-     (insert "\n\n# --ASSISTANT:\n"))))
+     (beyin--insert-role-marker "ASSISTANT"))))
 
 
 
 
-(defun beyin-chat--build-region-context()
+(defun beyin--insert-role-marker (role)
+  "Insert a role marker at the end of the current buffer.
+ROLE should be a string like \"USER\" or \"ASSISTANT\"."
+  (end-of-buffer)
+  (insert (format "\n\n# --%s:\n" role)))
+
+
+(defun beyin--prepare-region-context()
   (interactive)
   (concat
    "\n#### CONTEXT:"
@@ -221,20 +238,21 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
 
 (defun beyin--handle-send-chat-msg ()
   (let ((buffer (current-buffer)))
-    (setq beyin--last-buffer buffer)
+    (setq beyin--last-used-buffer buffer)
 
-    (let ((tokens (beyin--tokenize-buffer (buffer-substring-no-properties (point-min) (point-max)))))
-      (if (beyin--if-last-message-empty-user-message tokens)
-          (delete-window)
+    (let ((tokens (beyin--tokenize-buffer-content (buffer-substring-no-properties (point-min) (point-max)))))
+      (if (beyin--last-user-message-empty-p tokens)
+          (when (get-buffer-window buffer)
+            (delete-window (get-buffer-window buffer)))
         (gptel--update-status " Waiting LLM..." 'warning)
-        (gptel-request (beyin--parse-conversation-as-list-of-string tokens)
+        (gptel-request (beyin--extract-conversation-turns tokens)
           :buffer buffer
           :stream t
           :system (beyin--get-last-system-message tokens)
           :callback
           (lambda (response info)
             (if (not response)
-                (message "gptel-quick failed with message: %s" (plist-get info :status))
+                (insert "# --ASSISTANT:\n\ngptel failed with message: %s" (plist-get info :status))
               (with-current-buffer buffer
                 (run-hooks 'beyin-after-insert-llm-response-hook)
                 (when (stringp response)
@@ -272,7 +290,7 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
 
 (defun beyin-chat--handle-region()
   (interactive)
-  (let ((context-msg (beyin-chat--build-region-context)))
+  (let ((context-msg (beyin--prepare-region-context)))
     (beyin-chat--open-and-jump-buffer)
     (with-current-buffer (get-buffer-create beyin--default-buffer-name)
       (goto-char (point-max))
@@ -296,9 +314,12 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
 
 (define-derived-mode beyin-mode markdown-mode "Beyin Mode")
 
-(font-lock-add-keywords 'beyin-mode `(("^# --\\(USER\\):$" 1 'beyin-user-title-font prepend)) 'append)
-(font-lock-add-keywords 'beyin-mode `(("^# --\\(ASSISTANT\\):$" 1 'beyin-asistant-title-font prepend)) 'append)
-(font-lock-add-keywords 'beyin-mode `(("^# --\\(SYSTEM\\):$" 1 'beyin-system-title-font prepend)) 'append)
+(dolist (role-face '(("USER" . beyin-user-title-font)
+                     ("ASSISTANT" . beyin-asistant-title-font)
+                     ("SYSTEM" . beyin-system-title-font)))
+  (font-lock-add-keywords 'beyin-mode
+                          `((,(concat "^# --\\(" (car role-face) "\\):$") 1 ',(cdr role-face) prepend)) 'append))
+
 
 (add-to-list 'auto-mode-alist (cons "\\.beyin\\'" 'beyin-mode))
 
@@ -306,7 +327,7 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
             (lambda ()
               (when (eq major-mode 'beyin-mode)
                 (gptel-abort (current-buffer))
-                (beyin--end-of-response-hook)
+                (beyin--handle-end-of-response)
                 )))
 
 
