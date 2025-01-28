@@ -189,6 +189,7 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
 
 (setq beyin--last-used-buffer nil)
 
+
 
 
 (defun beyin--handle-end-of-response ()
@@ -329,6 +330,78 @@ ROLE should be a string like \"USER\" or \"ASSISTANT\"."
                 (gptel-abort (current-buffer))
                 (beyin--handle-end-of-response)
                 )))
+
+
+
+
+(defun beyin--get-current-number ()
+  "Return the current buffer's number if it's a Beyin buffer."
+  (let ((name (buffer-name)))
+    (cond
+     ((string= name beyin--default-buffer-name) 0)
+     ((string-match (concat "^" (regexp-quote beyin--default-buffer-name) " \\([0-9]+\\)$") name)
+      (string-to-number (match-string 1 name)))
+     (t nil))))
+
+(defun beyin--next-buffer-name (current-number)
+  "Generate the next buffer name based on CURRENT-NUMBER."
+  (if (eq current-number 0)
+      (concat beyin--default-buffer-name " 1")
+    (concat beyin--default-buffer-name " " (number-to-string (1+ current-number)))))
+
+(defun beyin--previous-buffer-name (current-number)
+  "Generate the previous buffer name based on CURRENT-NUMBER."
+  (cond
+   ((= current-number 0)
+    (let ((max-num 0))
+      (dolist (buf (buffer-list))
+        (let ((num (with-current-buffer buf (beyin--get-current-number))))
+          (when (and num (> num max-num))
+            (setq max-num num))))
+      (if (> max-num 0)
+          (concat beyin--default-buffer-name " " (number-to-string max-num))
+        beyin--default-buffer-name)))
+   ((= current-number 1)
+    beyin--default-buffer-name)
+   (t
+    (concat beyin--default-buffer-name " " (number-to-string (1- current-number))))))
+
+(defun beyin--switch-to-buffer (name)
+  "Switch to or create a Beyin buffer named NAME."
+  (let ((buffer (get-buffer-create name)))
+    (with-current-buffer buffer
+      (unless (eq major-mode 'beyin-mode)
+        (beyin-mode)
+        (gptel-mode)
+        (visual-line-mode 1)
+        (when (zerop (buffer-size))
+          (insert (concat "# --SYSTEM:\n" beyin--system-prompt "\n\n# --USER:\n"))
+          (re-search-backward "# --SYSTEM" nil t)
+          (markdown-back-to-heading)
+          (outline-hide-subtree)
+          (goto-char (point-max)))))
+    (switch-to-buffer buffer)))
+
+;; Define the navigation commands
+(defun beyin-next-buffer ()
+  "Switch to the next Beyin buffer."
+  (interactive)
+  (when (eq major-mode 'beyin-mode)
+    (let* ((current-number (beyin--get-current-number))
+           (next-name (beyin--next-buffer-name current-number)))
+      (beyin--switch-to-buffer next-name))))
+
+(defun beyin-previous-buffer ()
+  "Switch to the previous Beyin buffer."
+  (interactive)
+  (when (eq major-mode 'beyin-mode)
+    (let* ((current-number (beyin--get-current-number))
+           (prev-name (beyin--previous-buffer-name current-number)))
+      (beyin--switch-to-buffer prev-name))))
+
+;; Add keybindings to Beyin mode
+(define-key beyin-mode-map (kbd "M-n") 'beyin-next-buffer)
+(define-key beyin-mode-map (kbd "M-p") 'beyin-previous-buffer)
 
 
 
