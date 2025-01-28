@@ -50,6 +50,12 @@
   "HERE"
   :group 'beyin)
 
+(defvar beyin-after-buffer-opened-hook nil
+  "My custom hook")
+
+(defvar beyin-after-insert-llm-response-hook nil
+  "My custom hook")
+
 
 
 (defcustom beyin--system-prompt
@@ -62,7 +68,12 @@ Users may select text. It there is selected text, it will be enclosed in <contex
 
 <review_task>
 If user ask you to review a code, try to find bugs, not talk much about what is code for.
-</review_task>"
+</review_task>
+
+<grammar_fix>
+If user say grammar, fix user grammar
+</grammar_fix>
+"
   "HERE")
 
 
@@ -104,9 +115,10 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
 
     (dolist (token tokens)
       (let ((key (car token))
-            (value (downcase (cdr token))))
+            (value (cdr token)))
         (pcase key
           ('role
+           (setq value (downcase value))
            (setq current-role value)
            (unless (member value '("user" "assistant"))
              (setq current-role nil)))
@@ -130,10 +142,10 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
         (result nil))
     (dolist (token tokens)
       (let ((key (car token))
-            (value (downcase (cdr token))))
+            (value (cdr token)))
         (pcase key
           ('role
-           (when (s-equals? value "system")
+           (when (s-equals? (downcase value) "system")
              (setq found t)))
           ('text
            (when found
@@ -141,20 +153,39 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
              (setq result value))))))
     result))
 
+(defun beyin--if-last-message-empty-user-message (tokens)
+  "returns nil or t"
+  (let ((found nil)
+        (last-user-message nil))
+    (dolist (token tokens)
+      (let ((key (car token))
+            (value (cdr token)))
+        (pcase key
+          ('role
+           (when (s-equals? (downcase value) "user")
+             (setq found t)))
+          ('text
+           (when found
+             (setq found nil)
+             (setq last-user-message value))))))
+
+    (if (s-blank? (s-trim last-user-message))
+        t
+      nil)))
+
 
 
 
-(setq beyin--waiting-response-overlay nil)
 (setq beyin--last-buffer nil)
 
 
 
 (defun beyin--end-of-response-hook ()
-  (delete-overlay beyin--waiting-response-overlay)
-  (read-only-mode 0)
   (end-of-buffer)
-  (insert "\n\n# --USER:\n")
-  (font-lock-ensure))
+  (unless (beyin--if-last-message-empty-user-message (beyin--tokenize-buffer (buffer-substring-no-properties (point-min) (point-max))))
+    (insert "\n\n# --USER:\n"))
+
+  (gptel--update-status " READY" 'success))
 
 ;; TODO them make buffer local
 (add-hook
@@ -166,10 +197,9 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
  'gptel-pre-response-hook
  (lambda()
    (with-current-buffer beyin--last-buffer
+     (gptel--update-status " Waiting LLM..." 'warning)
      (end-of-buffer)
-     (insert "\n\n# --ASSISTANT:\n")
-     (font-lock-ensure)
-     (read-only-mode 1))))
+     (insert "\n\n# --ASSISTANT:\n"))))
 
 
 
@@ -190,50 +220,45 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
 
 
 (defun beyin--handle-send-chat-msg ()
-  (setq beyin--waiting-response-overlay (make-overlay (point-max) (point-max)))
-  (overlay-put beyin--waiting-response-overlay 'after-string
-               (concat "\n\n--> "
-                       (if (eq (type-of gptel-model) 'string)
-                           gptel-model
-                         (symbol-name gptel-model))
-                       " THINKING..."))
-
   (let ((buffer (current-buffer)))
     (setq beyin--last-buffer buffer)
 
     (let ((tokens (beyin--tokenize-buffer (buffer-substring-no-properties (point-min) (point-max)))))
-      (gptel-request (beyin--parse-conversation-as-list-of-string tokens)
-        :buffer buffer
-        :stream t
-        :system (beyin--get-last-system-message tokens)
-        :callback
-        (lambda (response info)
-          (delete-overlay beyin--waiting-response-overlay)
-          (if (not response) (message "gptel-quick failed with message: %s" (plist-get info :status))
-            (with-current-buffer buffer
-              (let ((inhibit-read-only t))
-                (goto-char (point-max))
-                (insert response))
-              (font-lock-ensure))))))))
+      (if (beyin--if-last-message-empty-user-message tokens)
+          (delete-window)
+        (gptel--update-status " Waiting LLM..." 'warning)
+        (gptel-request (beyin--parse-conversation-as-list-of-string tokens)
+          :buffer buffer
+          :stream t
+          :system (beyin--get-last-system-message tokens)
+          :callback
+          (lambda (response info)
+            (if (not response)
+                (message "gptel-quick failed with message: %s" (plist-get info :status))
+              (with-current-buffer buffer
+                (run-hooks 'beyin-after-insert-llm-response-hook)
+                (when (stringp response)
+                  (save-excursion
+                    (end-of-buffer)
+                    (insert response)))))))))))
 
 
 (defun beyin-chat--open-and-jump-buffer()
   (interactive)
   (let ((has-old-session (get-buffer beyin--default-buffer-name)))
     (with-current-buffer (get-buffer-create beyin--default-buffer-name)
-      (let ((inhibit-read-only t))
-        (beyin-mode)
-        (gptel-mode)
-        (visual-line-mode 1)
-        (goto-char (point-max))
+      (beyin-mode)
+      (gptel-mode)
+      (visual-line-mode 1)
+      (goto-char (point-max))
 
-        ;; initialize system message
-        (unless has-old-session
-          (insert (concat "# --SYSTEM:\n" beyin--system-prompt "\n\n# --USER:\n"))
-          (re-search-backward "# --SYSTEM" nil t)
-          (markdown-back-to-heading)
-          (outline-hide-subtree)
-          (goto-char (point-max)))))
+      ;; initialize system message
+      (unless has-old-session
+        (insert (concat "# --SYSTEM:\n" beyin--system-prompt "\n\n# --USER:\n"))
+        (re-search-backward "# --SYSTEM" nil t)
+        (markdown-back-to-heading)
+        (outline-hide-subtree)
+        (goto-char (point-max))))
 
     (unless (get-buffer-window beyin--default-buffer-name 0)
       (display-buffer (get-buffer-create beyin--default-buffer-name)
@@ -243,8 +268,7 @@ from user. Return will be like '(\"user msg\" nil \"user msg2\" \"asistant msg\"
 
     (select-window (get-buffer-window beyin--default-buffer-name 0))
     (goto-char (point-max))
-    (god-local-mode 0)
-    (beacon-blink)))
+    (run-hooks 'beyin-after-buffer-opened-hook)))
 
 (defun beyin-chat--handle-region()
   (interactive)
